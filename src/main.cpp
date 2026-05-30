@@ -83,8 +83,7 @@ extern "C" {
 #define BTN_PREV            9
 #define BTN_NEXT           10
 
-// --- Status LED (built-in on many ESP32-S3-DevKitC boards) -----------------
-#define LED_PIN            48
+// (Status LED removed)
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  CONSTANTS
@@ -210,27 +209,17 @@ static ButtonState buttons[] = {
 static constexpr int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  LED FUNCTIONS
+ *  ERROR HANDLING
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-static void led_init() {
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
-}
-
 /*
- * Blink the LED at the given interval and HALT (never returns).
- * Used for fatal errors:
- *   • 100 ms interval = rapid blink  (SD mount failure)
- *   • 500 ms interval = slow blink   (no MP3 files found)
+ * Halt the system (never returns).
+ * Used for fatal errors like SD mount failure.
  */
-static void led_blink_halt(uint16_t interval_ms) {
-    Serial.printf("[HALT] Blinking LED every %d ms\n", interval_ms);
+static void sys_halt() {
+    Serial.println("[HALT] System halted due to fatal error.");
     while (true) {
-        digitalWrite(LED_PIN, HIGH);
-        delay(interval_ms);
-        digitalWrite(LED_PIN, LOW);
-        delay(interval_ms);
+        delay(1000);
     }
 }
 
@@ -946,14 +935,6 @@ static void system_task(void* param) {
                           st_name, audio_state.current_track + 1, track_count,
                           audio_state.volume, VOLUME_STEPS);
 
-            // LED: solid while playing, blink while paused
-            if (st == STATE_PLAYING) {
-                digitalWrite(LED_PIN, HIGH);
-            } else if (st == STATE_PAUSED) {
-                digitalWrite(LED_PIN, (now / 500) % 2);  // Blink 1 Hz
-            } else {
-                digitalWrite(LED_PIN, LOW);
-            }
         }
 
         // ── 10 ms poll interval ────────────────────────────────────────
@@ -978,13 +959,10 @@ void setup() {
     Serial.printf("PSRAM free: %u bytes\n", ESP.getFreePsram());
     Serial.printf("CPU freq:   %d MHz\n",   ESP.getCpuFreqMHz());
 
-    // ── LED ────────────────────────────────────────────────────────────
-    led_init();
-
     // ── SD Card ────────────────────────────────────────────────────────
     if (!mount_sd_card()) {
         Serial.println("[FATAL] SD card mount failed!");
-        led_blink_halt(100);   // Rapid blink and halt
+        sys_halt();
     }
 
     // ── Scan for MP3 files ─────────────────────────────────────────────
@@ -992,14 +970,14 @@ void setup() {
     playlist = (char**)ps_calloc(MAX_TRACKS, sizeof(char*));
     if (!playlist) {
         Serial.println("[FATAL] Playlist allocation failed!");
-        led_blink_halt(100);
+        sys_halt();
     }
 
     scan_mp3_files(SD_MMC, "/", 0);
 
     if (track_count == 0) {
         Serial.println("[FATAL] No MP3 files found on SD card!");
-        led_blink_halt(500);   // Slow blink and halt
+        sys_halt();
     }
 
     // Sort playlist alphabetically
@@ -1016,7 +994,7 @@ void setup() {
     // ── Ring Buffer (PSRAM) ────────────────────────────────────────────
     if (!pcm_ring_buffer.init(RING_BUF_SIZE)) {
         Serial.println("[FATAL] Ring buffer PSRAM allocation failed!");
-        led_blink_halt(100);
+        sys_halt();
     }
     Serial.printf("[BUFFER] PCM ring buffer: %d KB in PSRAM\n",
                   RING_BUF_SIZE / 1024);
@@ -1025,7 +1003,7 @@ void setup() {
     cmd_queue = xQueueCreate(16, sizeof(CommandMsg));
     if (!cmd_queue) {
         Serial.println("[FATAL] Queue creation failed!");
-        led_blink_halt(100);
+        sys_halt();
     }
 
     // ── Shared Audio State ─────────────────────────────────────────────
@@ -1053,7 +1031,7 @@ void setup() {
     tft.fillScreen(TFT_BLACK);
     if (sprite.createSprite(240, 320) == nullptr) {
         Serial.println("[FATAL] Failed to create TFT sprite!");
-        led_blink_halt(100);
+        sys_halt();
     }
 
     // ── Create FreeRTOS Tasks ──────────────────────────────────────────
