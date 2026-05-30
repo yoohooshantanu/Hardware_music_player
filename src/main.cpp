@@ -54,6 +54,8 @@ extern "C" {
 }
 
 #include "ring_buffer.h"
+#include <TFT_eSPI.h>
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  PIN DEFINITIONS  (all configurable – adjust to your board)
@@ -188,7 +190,12 @@ static SharedAudioState audio_state      = {};        // Core 1 → Core 0
 // PCM ring buffer (PSRAM-backed)
 static RingBuffer pcm_ring_buffer;
 
+// TFT Display
+static TFT_eSPI tft = TFT_eSPI();
+static TFT_eSprite sprite = TFT_eSprite(&tft);
+
 // Task handles
+
 static TaskHandle_t audio_task_handle  = nullptr;
 static TaskHandle_t system_task_handle = nullptr;
 
@@ -822,56 +829,122 @@ static void audio_task(void* param) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ *  UI RENDERING (Core 0)
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+static void draw_ui() {
+    sprite.fillSprite(TFT_BLACK);
+    
+    // --- Header ---
+    sprite.fillRect(0, 0, 240, 40, TFT_DARKGREY);
+    sprite.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    sprite.setTextDatum(MC_DATUM);
+    
+    const char* state_str = "IDLE";
+    uint16_t state_color = TFT_WHITE;
+    switch(audio_state.state) {
+        case STATE_PLAYING:   state_str = "PLAYING";   state_color = TFT_GREEN;  break;
+        case STATE_PAUSED:    state_str = "PAUSED";    state_color = TFT_ORANGE; break;
+        case STATE_STOPPED:   state_str = "STOPPED";   state_color = TFT_RED;    break;
+        case STATE_ERROR:     state_str = "ERROR";     state_color = TFT_RED;    break;
+        case STATE_BUFFERING: state_str = "BUFFERING"; state_color = TFT_YELLOW; break;
+        default: break;
+    }
+    
+    sprite.setTextColor(state_color, TFT_DARKGREY);
+    sprite.drawString(state_str, 60, 20, 4);
+    
+    // Volume bar
+    sprite.drawRect(130, 10, 100, 20, TFT_WHITE);
+    int vol_w = (audio_state.volume * 100) / VOLUME_STEPS;
+    sprite.fillRect(130, 10, vol_w, 20, TFT_GREEN);
+    
+    // --- Body (Track Info) ---
+    sprite.setTextColor(TFT_WHITE, TFT_BLACK);
+    sprite.setTextDatum(MC_DATUM);
+    
+    char track_num[32];
+    sprintf(track_num, "Track %d / %d", audio_state.current_track + 1, track_count);
+    sprite.drawString(track_num, 120, 100, 4);
+    
+    if (audio_state.current_track < track_count && track_count > 0) {
+        // Extract filename from path
+        const char* path = playlist[audio_state.current_track];
+        const char* name = strrchr(path, '/');
+        name = name ? name + 1 : path;
+        
+        char short_name[32];
+        strncpy(short_name, name, 31);
+        short_name[31] = '\0';
+        sprite.drawString(short_name, 120, 160, 4);
+    }
+    
+    // --- Footer (Format Info) ---
+    sprite.fillRect(0, 280, 240, 40, TFT_NAVY);
+    sprite.setTextColor(TFT_LIGHTGREY, TFT_NAVY);
+    sprite.setTextDatum(MC_DATUM);
+    
+    if (audio_state.state == STATE_PLAYING || audio_state.state == STATE_PAUSED) {
+        char fmt[64];
+        sprintf(fmt, "%d kbps | %d Hz | %d ch", 
+                audio_state.bitrate_kbps, audio_state.sample_rate, audio_state.channels);
+        sprite.drawString(fmt, 120, 300, 2);
+    }
+    
+    sprite.pushSprite(0, 0);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  *  SYSTEM TASK  (Core 0)
  * ═══════════════════════════════════════════════════════════════════════════
- *
- *  This task is pinned to Core 0 and handles:
- *    • Button polling (every ~10 ms with debounce)
- *    • Periodic serial status output (every 2 seconds)
- *    • LED status indication
- *
- *  It communicates with the audio task via the cmd_queue (sending commands)
- *  and reads the audio_state struct (for status display).
  */
 static void system_task(void* param) {
     uint32_t last_status_ms = 0;
-    const char* state_names[] = {
-        "IDLE", "PLAYING", "PAUSED", "BUFFERING", "ERROR", "STOPPED"
-    };
+    AudioState prev_state = STATE_IDLE;
+    uint8_t prev_volume = 255;
+    uint16_t prev_track = 65535;
 
     Serial.println("[SYSTEM] System task started on Core 0");
+
+    // Draw initial UI
+    draw_ui();
 
     while (true) {
         // ── Poll buttons ───────────────────────────────────────────────
         poll_buttons();
 
-        // ── Periodic status output ─────────────────────────────────────
         uint32_t now = millis();
+        bool needs_redraw = false;
+
+        // Only redraw UI when essential state changes
+        if (audio_state.state != prev_state || 
+            audio_state.volume != prev_volume ||
+            audio_state.current_track != prev_track) {
+            
+            prev_state = audio_state.state;
+            prev_volume = audio_state.volume;
+            prev_track = audio_state.current_track;
+            needs_redraw = true;
+        }
+
+        if (needs_redraw) {
+            draw_ui();
+        }
+
+        // ── Periodic serial status output ─────────────────────────────────────
         if (now - last_status_ms > 2000) {
             last_status_ms = now;
+            
+            // We also periodically redraw the UI to recover from any potential glitches
+            draw_ui();
 
+            const char* state_names[] = { "IDLE", "PLAYING", "PAUSED", "BUFFERING", "ERROR", "STOPPED" };
             uint8_t st = audio_state.state;
             const char* st_name = (st < 6) ? state_names[st] : "???";
 
-            Serial.printf("[STATUS] %s | Track %d/%d | Vol %d/%d",
-                          st_name,
-                          audio_state.current_track + 1, track_count,
+            Serial.printf("[STATUS] %s | Track %d/%d | Vol %d/%d\n",
+                          st_name, audio_state.current_track + 1, track_count,
                           audio_state.volume, VOLUME_STEPS);
-
-            if (st == STATE_PLAYING || st == STATE_PAUSED) {
-                Serial.printf(" | %d kbps %d Hz %dch | Buf: %u/%u",
-                              audio_state.bitrate_kbps,
-                              audio_state.sample_rate,
-                              audio_state.channels,
-                              pcm_ring_buffer.available_read(),
-                              RING_BUF_SIZE);
-            }
-            Serial.println();
-
-            if (audio_state.current_track < track_count) {
-                Serial.printf("[TRACK] %s\n",
-                              playlist[audio_state.current_track]);
-            }
 
             // LED: solid while playing, blink while paused
             if (st == STATE_PLAYING) {
@@ -887,6 +960,7 @@ static void system_task(void* param) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  SETUP  (runs on Core 1 in Arduino ESP32)
@@ -971,6 +1045,16 @@ void setup() {
     Serial.printf("[BTN] 5 buttons configured (pins %d,%d,%d,%d,%d)\n",
                   BTN_PLAY_PAUSE, BTN_VOL_UP, BTN_VOL_DOWN,
                   BTN_PREV, BTN_NEXT);
+
+    // ── TFT Display ────────────────────────────────────────────────────
+    Serial.println("[TFT] Initializing ST7789 display...");
+    tft.begin();
+    tft.setRotation(0);
+    tft.fillScreen(TFT_BLACK);
+    if (sprite.createSprite(240, 320) == nullptr) {
+        Serial.println("[FATAL] Failed to create TFT sprite!");
+        led_blink_halt(100);
+    }
 
     // ── Create FreeRTOS Tasks ──────────────────────────────────────────
     /*

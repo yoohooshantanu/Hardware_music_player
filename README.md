@@ -45,7 +45,23 @@ Data Flow:
 | 3.3V | VCC | Power |
 | GND | GND | Ground |
 
+### ST7789 2.4" TFT Display (SPI)
+
+| ESP32-S3 GPIO | TFT Pin | Function |
+|--------------|---------|----------|
+| GPIO 11 | MOSI / SDA | SPI Data Out |
+| GPIO 12 | SCLK / SCL | SPI Clock |
+| GPIO 13 | CS | Chip Select |
+| GPIO 14 | DC / RS | Data / Command |
+| GPIO 21 | RST / RES | Reset |
+| GPIO 47 | BL | Backlight (Optional) |
+| 3.3V | VCC | Power |
+| GND | GND | Ground |
+
+> **Note:** The TFT uses the `TFT_eSPI` library, configured directly via `platformio.ini` build flags to keep the C++ code clean.
+
 ### SD Card (SDMMC Mode)
+
 
 | ESP32-S3 GPIO | SD Card Pin | Function |
 |--------------|------------|----------|
@@ -126,6 +142,14 @@ All pins are defined as `#define` macros at the top of `src/main.cpp`. Modify th
 #define SDMMC_CLK_PIN      39
 #define SDMMC_CMD_PIN      38
 #define SDMMC_D0_PIN       40
+
+// TFT SPI pins
+#define TFT_MOSI           11
+#define TFT_SCLK           12
+#define TFT_CS             13
+#define TFT_DC             14
+#define TFT_RST            21
+#define TFT_BL             47
 
 // Button pins
 #define BTN_PLAY_PAUSE      6
