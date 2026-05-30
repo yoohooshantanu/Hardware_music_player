@@ -193,6 +193,10 @@ static RingBuffer pcm_ring_buffer;
 static TFT_eSPI tft = TFT_eSPI();
 static TFT_eSprite sprite = TFT_eSprite(&tft);
 
+// UI Animation State
+static int16_t  marquee_x = 240;
+static uint8_t  eq_heights[5] = {10, 20, 15, 25, 5};
+
 // Task handles
 
 static TaskHandle_t audio_task_handle  = nullptr;
@@ -818,66 +822,96 @@ static void audio_task(void* param) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  UI RENDERING (Core 0)
+ *  PREMIUM UI RENDERING (Core 0)
  * ═══════════════════════════════════════════════════════════════════════════
  */
 static void draw_ui() {
     sprite.fillSprite(TFT_BLACK);
     
-    // --- Header ---
-    sprite.fillRect(0, 0, 240, 40, TFT_DARKGREY);
-    sprite.setTextColor(TFT_WHITE, TFT_DARKGREY);
-    sprite.setTextDatum(MC_DATUM);
+    // --- Header (Dark Gray) ---
+    sprite.fillRect(0, 0, 240, 44, sprite.color565(25, 25, 25));
     
-    const char* state_str = "IDLE";
-    uint16_t state_color = TFT_WHITE;
-    switch(audio_state.state) {
-        case STATE_PLAYING:   state_str = "PLAYING";   state_color = TFT_GREEN;  break;
-        case STATE_PAUSED:    state_str = "PAUSED";    state_color = TFT_ORANGE; break;
-        case STATE_STOPPED:   state_str = "STOPPED";   state_color = TFT_RED;    break;
-        case STATE_ERROR:     state_str = "ERROR";     state_color = TFT_RED;    break;
-        case STATE_BUFFERING: state_str = "BUFFERING"; state_color = TFT_YELLOW; break;
-        default: break;
+    // Volume Icon (Speaker)
+    sprite.fillTriangle(10, 22, 20, 12, 20, 32, TFT_LIGHTGREY);
+    sprite.fillRect(4, 17, 6, 10, TFT_LIGHTGREY);
+    
+    // Volume Bar
+    sprite.drawFastHLine(30, 22, 60, TFT_DARKGREY);
+    int vol_w = (audio_state.volume * 60) / VOLUME_STEPS;
+    if (vol_w > 0) {
+        sprite.fillRoundRect(30, 18, vol_w, 8, 3, sprite.color565(0, 255, 128)); // Neon Green
     }
     
-    sprite.setTextColor(state_color, TFT_DARKGREY);
-    sprite.drawString(state_str, 60, 20, 4);
-    
-    // Volume bar
-    sprite.drawRect(130, 10, 100, 20, TFT_WHITE);
-    int vol_w = (audio_state.volume * 100) / VOLUME_STEPS;
-    sprite.fillRect(130, 10, vol_w, 20, TFT_GREEN);
+    // Buffer Health (Small dot in top right)
+    uint16_t buf_color = TFT_GREEN;
+    size_t buf_avail = pcm_ring_buffer.available_read();
+    if (buf_avail < RING_BUF_SIZE / 4) buf_color = TFT_RED;
+    else if (buf_avail < RING_BUF_SIZE / 2) buf_color = TFT_YELLOW;
+    sprite.fillCircle(224, 22, 4, buf_color);
+
+    // --- Centerpiece (Equalizer Animation) ---
+    int eq_base_y = 130;
+    int eq_base_x = 80;
+    for (int i=0; i<5; i++) {
+        int h = eq_heights[i];
+        sprite.fillRoundRect(eq_base_x + (i * 16), eq_base_y - h, 10, h, 3, sprite.color565(0, 200, 255));
+    }
     
     // --- Body (Track Info) ---
-    sprite.setTextColor(TFT_WHITE, TFT_BLACK);
     sprite.setTextDatum(MC_DATUM);
-    
+    sprite.setTextColor(TFT_LIGHTGREY);
     char track_num[32];
-    sprintf(track_num, "Track %d / %d", audio_state.current_track + 1, track_count);
-    sprite.drawString(track_num, 120, 100, 4);
-    
+    sprintf(track_num, "TRACK %d OF %d", audio_state.current_track + 1, track_count);
+    sprite.drawString(track_num, 120, 160, 2); // Font 2 (small)
+
     if (audio_state.current_track < track_count && track_count > 0) {
-        // Extract filename from path
         const char* path = playlist[audio_state.current_track];
         const char* name = strrchr(path, '/');
         name = name ? name + 1 : path;
         
-        char short_name[32];
-        strncpy(short_name, name, 31);
-        short_name[31] = '\0';
-        sprite.drawString(short_name, 120, 160, 4);
+        sprite.setTextColor(TFT_WHITE);
+        sprite.setTextDatum(TL_DATUM); // Top Left for marquee
+        
+        // Font 4 is 26px high
+        int text_w = sprite.textWidth(name, 4);
+        if (marquee_x < -text_w) {
+            marquee_x = 240; // Wrap around
+        }
+        sprite.drawString(name, marquee_x, 180, 4); 
     }
     
+    // --- Playback Controls ---
+    int cy = 240;
+    int cx = 120;
+    
+    // Play/Pause button background
+    sprite.fillCircle(cx, cy, 24, sprite.color565(0, 255, 128));
+    
+    if (audio_state.state == STATE_PLAYING) {
+        // Pause icon (two bars)
+        sprite.fillRoundRect(cx - 7, cy - 8, 5, 16, 2, TFT_BLACK);
+        sprite.fillRoundRect(cx + 2, cy - 8, 5, 16, 2, TFT_BLACK);
+    } else {
+        // Play icon (triangle)
+        sprite.fillTriangle(cx - 3, cy - 9, cx - 3, cy + 9, cx + 9, cy, TFT_BLACK);
+    }
+    
+    // Prev/Next icons
+    sprite.fillTriangle(cx - 40, cy, cx - 28, cy - 8, cx - 28, cy + 8, TFT_LIGHTGREY);
+    sprite.fillTriangle(cx + 40, cy, cx + 28, cy - 8, cx + 28, cy + 8, TFT_LIGHTGREY);
+    
     // --- Footer (Format Info) ---
-    sprite.fillRect(0, 280, 240, 40, TFT_NAVY);
-    sprite.setTextColor(TFT_LIGHTGREY, TFT_NAVY);
+    sprite.fillRect(0, 290, 240, 30, sprite.color565(15, 15, 15));
+    sprite.setTextColor(TFT_DARKGREY);
     sprite.setTextDatum(MC_DATUM);
     
     if (audio_state.state == STATE_PLAYING || audio_state.state == STATE_PAUSED) {
         char fmt[64];
         sprintf(fmt, "%d kbps | %d Hz | %d ch", 
                 audio_state.bitrate_kbps, audio_state.sample_rate, audio_state.channels);
-        sprite.drawString(fmt, 120, 300, 2);
+        sprite.drawString(fmt, 120, 305, 1);
+    } else {
+        sprite.drawString(audio_state.state == STATE_ERROR ? "DECODE ERROR" : "READY", 120, 305, 1);
     }
     
     sprite.pushSprite(0, 0);
@@ -889,44 +923,63 @@ static void draw_ui() {
  */
 static void system_task(void* param) {
     uint32_t last_status_ms = 0;
+    uint32_t last_anim_ms = 0;
     AudioState prev_state = STATE_IDLE;
     uint8_t prev_volume = 255;
     uint16_t prev_track = 65535;
 
     Serial.println("[SYSTEM] System task started on Core 0");
 
-    // Draw initial UI
-    draw_ui();
-
     while (true) {
         // ── Poll buttons ───────────────────────────────────────────────
         poll_buttons();
 
         uint32_t now = millis();
-        bool needs_redraw = false;
+        bool state_changed = false;
 
-        // Only redraw UI when essential state changes
+        // Detect major state changes
         if (audio_state.state != prev_state || 
             audio_state.volume != prev_volume ||
             audio_state.current_track != prev_track) {
             
             prev_state = audio_state.state;
             prev_volume = audio_state.volume;
-            prev_track = audio_state.current_track;
-            needs_redraw = true;
+            
+            if (audio_state.current_track != prev_track) {
+                prev_track = audio_state.current_track;
+                marquee_x = 240; // Reset marquee on track change
+            }
+            state_changed = true;
         }
 
-        if (needs_redraw) {
+        // ── Animation Frame (every 33ms -> ~30 FPS) ────────────────────
+        if (now - last_anim_ms > 33) {
+            last_anim_ms = now;
+            
+            // 1. Marquee Scrolling
+            if (audio_state.current_track < track_count) {
+                marquee_x -= 3; // Scroll speed
+            }
+            
+            // 2. Equalizer Animation
+            if (audio_state.state == STATE_PLAYING) {
+                for(int i=0; i<5; i++) {
+                    eq_heights[i] = 5 + (esp_random() % 35); // Dynamic height 5 to 40
+                }
+            } else {
+                for(int i=0; i<5; i++) eq_heights[i] = 3; // Flat when paused/stopped
+            }
+            
+            // Redraw screen
+            draw_ui();
+        } else if (state_changed) {
+            // Immediate redraw on state change to avoid input lag
             draw_ui();
         }
 
-        // ── Periodic serial status output ─────────────────────────────────────
+        // ── Periodic serial status output ──────────────────────────────
         if (now - last_status_ms > 2000) {
             last_status_ms = now;
-            
-            // We also periodically redraw the UI to recover from any potential glitches
-            draw_ui();
-
             const char* state_names[] = { "IDLE", "PLAYING", "PAUSED", "BUFFERING", "ERROR", "STOPPED" };
             uint8_t st = audio_state.state;
             const char* st_name = (st < 6) ? state_names[st] : "???";
@@ -934,7 +987,6 @@ static void system_task(void* param) {
             Serial.printf("[STATUS] %s | Track %d/%d | Vol %d/%d\n",
                           st_name, audio_state.current_track + 1, track_count,
                           audio_state.volume, VOLUME_STEPS);
-
         }
 
         // ── 10 ms poll interval ────────────────────────────────────────
